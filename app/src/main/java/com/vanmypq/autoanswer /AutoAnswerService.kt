@@ -41,12 +41,20 @@ class AutoAnswerService : AccessibilityService() {
     private var status = ""
     private var warnedNoOcr = false
     private var lastSent = ""
+    private val answerCache = HashMap<Int, Pair<String, Int>>()
+
+    private val idleTicker = object : Runnable {
+        override fun run() {
+            if (!auto) refresh()
+            handler.postDelayed(this, 2000)
+        }
+    }
 
     private val loop = object : Runnable {
         override fun run() {
             if (!auto) return
             tick()
-            handler.postDelayed(this, 1500)
+            handler.postDelayed(this, 600)
         }
     }
 
@@ -76,6 +84,7 @@ class AutoAnswerService : AccessibilityService() {
         wm.addView(tv, lp)
         button = tv
         refresh()
+        handler.post(idleTicker)
     }
 
     private fun toggle() {
@@ -93,7 +102,8 @@ class AutoAnswerService : AccessibilityService() {
 
     private fun refresh() {
         button?.apply {
-            text = if (auto) "■ AI: $status" else "▶ AI"
+            text = if (auto) "■ AI: $status"
+                   else if (CaptureService.isRunning()) "▶ AI 📷" else "▶ AI ⚠ chưa bật chụp màn hình"
             setBackgroundColor(if (auto) Color.parseColor("#CC2E7D32") else Color.parseColor("#CC424242"))
         }
     }
@@ -186,11 +196,29 @@ class AutoAnswerService : AccessibilityService() {
             setStatus("chờ trang ổn định…")
             return
         }
+        val cached = answerCache[h]
+        if (cached != null) {
+            val cand = items.filter { it.text == cached.first }
+            if (cand.size > cached.second) {
+                lastHash = h
+                status = "nhớ: " + cached.first.take(25)
+                refresh()
+                cooldownUntil = SystemClock.uptimeMillis() + 2000
+                choose(cand[cached.second], cached.second)
+                return
+            }
+        }
+        val hasImg = CaptureService.isRunning()
+        val text = buildPrompt(items)
+        if (!hasImg && text.contains("(công thức)")) {
+            status = "⚠ CHƯA BẬT CHỤP MÀN HÌNH: mở app Auto Trắc Nghiệm > Cấp quyền chụp màn hình"
+            refresh()
+            cooldownUntil = SystemClock.uptimeMillis() + 3000
+            return
+        }
         lastHash = h
         busy = true
-        val hasImg = CaptureService.isRunning()
-        setStatus(if (hasImg) "đang hỏi AI (có ảnh)…" else "đang hỏi AI (KHÔNG ẢNH)…")
-        val text = buildPrompt(items)
+        setStatus(if (hasImg) "đang hỏi AI (có ảnh)…" else "đang hỏi AI (không ảnh)…")
         lastSent = text
         exec.execute {
             var gotId: Int? = null
@@ -215,8 +243,10 @@ class AutoAnswerService : AccessibilityService() {
                     retries = 0
                     status = "chọn $id: " + items[id - 1].text.take(25) + (if (hasImg) "" else " ⚠không ảnh")
                     refresh()
-                    cooldownUntil = SystemClock.uptimeMillis() + 3500
-                    choose(items[id - 1], items.subList(0, id - 1).count { it.text == items[id - 1].text })
+                    cooldownUntil = SystemClock.uptimeMillis() + 2000
+                    val occ = items.subList(0, id - 1).count { it.text == items[id - 1].text }
+                    if (hasImg) answerCache[h] = Pair(items[id - 1].text, occ)
+                    choose(items[id - 1], occ)
                 } else if (retries < 2) {
                     retries++
                     lastHash = 0
@@ -293,7 +323,7 @@ class AutoAnswerService : AccessibilityService() {
             lastHash = h2
             currentHash = h2
             layoutHash = layoutOf(items2)
-        }, 1500)
+        }, 1200)
     }
 
     private fun clickNode(n: AccessibilityNodeInfo?) {
@@ -331,6 +361,7 @@ class AutoAnswerService : AccessibilityService() {
     override fun onInterrupt() {}
     override fun onDestroy() {
         handler.removeCallbacks(loop)
+        handler.removeCallbacks(idleTicker)
         (getSystemService(WINDOW_SERVICE) as WindowManager).let { wm -> button?.let { wm.removeView(it) } }
         super.onDestroy()
     }
