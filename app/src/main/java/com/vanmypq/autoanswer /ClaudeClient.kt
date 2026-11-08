@@ -6,9 +6,11 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 // Giữ tên ClaudeClient để không phải sửa file khác. Thực tế gọi Google Gemini API.
+// Tự dò model, nếu model này hết hạn mức (429) hoặc không có (404) thì tự thử model kế tiếp.
 object ClaudeClient {
     private const val BASE = "https://generativelanguage.googleapis.com/v1beta"
-    private var model: String? = null
+    private var models: List<String>? = null
+    private var idx = 0
     private var useNoThinking = true
 
     private const val SYSTEM = "Bạn là trợ lý làm bài trắc nghiệm. Người dùng gửi danh sách các phần tử " +
@@ -18,8 +20,8 @@ object ClaudeClient {
         "chứa nội dung đáp án, hoặc chữ cái A/B/C/D của đáp án đó). Nếu màn hình không có câu trắc nghiệm " +
         "hoặc không chắc chắn, trả {\"id\": null}."
 
-    private fun pickModel(apiKey: String): String {
-        model?.let { return it }
+    private fun loadModels(apiKey: String): List<String> {
+        models?.let { return it }
         val c = URL("$BASE/models?pageSize=200").openConnection() as HttpURLConnection
         c.connectTimeout = 10000
         c.readTimeout = 20000
@@ -28,20 +30,28 @@ object ClaudeClient {
         val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().readText()
         if (code !in 200..299) throw RuntimeException("HTTP $code: ${txt.take(150)}")
         val arr = JSONObject(txt).optJSONArray("models") ?: JSONArray()
-        val skip = listOf("lite", "image", "tts", "live", "audio", "embedding", "robotics", "computer", "exp")
-        val names = ArrayList<String>()
+        val skip = listOf("image", "tts", "live", "audio", "embedding", "robotics", "computer", "exp")
+        val flash = ArrayList<String>()
+        val lite = ArrayList<String>()
         for (i in 0 until arr.length()) {
             val m = arr.getJSONObject(i)
             val n = m.optString("name").removePrefix("models/")
             val methods = m.optJSONArray("supportedGenerationMethods")?.toString() ?: ""
-            if (methods.contains("generateContent") && n.startsWith("gemini-") &&
-                n.contains("flash") && skip.none { n.contains(it) }
-            ) names.add(n)
+            if (!methods.contains("generateContent") || !n.startsWith("gemini-") ||
+                !n.contains("flash") || skip.any { n.contains(it) }
+            ) continue
+            if (n.contains("lite")) lite.add(n) else flash.add(n)
         }
-        val pick = if (names.contains("gemini-flash-latest")) "gemini-flash-latest"
-        else names.sortedDescending().firstOrNull() ?: "gemini-flash-latest"
-        model = pick
-        return pick
+        val list = ArrayList<String>()
+        list.add(if (flash.contains("gemini-flash-latest")) "gemini-flash-latest"
+                 else flash.sortedDescending().firstOrNull() ?: "gemini-flash-latest")
+        list.add(if (lite.contains("gemini-flash-lite-latest")) "gemini-flash-lite-latest"
+                 else lite.sortedDescending().firstOrNull() ?: "gemini-flash-lite-latest")
+        list.addAll(flash.sortedDescending())
+        list.addAll(lite.sortedDescending())
+        val result = list.distinct()
+        models = result
+        return result
     }
 
     private fun buildBody(screenText: String, noThinking: Boolean): JSONObject {
@@ -69,23 +79,37 @@ object ClaudeClient {
         return Pair(code, resp)
     }
 
-    fun ask(apiKey: String, screenText: String): Int? {
-        val m = pickModel(apiKey)
-        var r = post(apiKey, m, buildBody(screenText, useNoThinking))
-        if (r.first == 400 && useNoThinking) {
-            useNoThinking = false
-            r = post(apiKey, m, buildBody(screenText, false))
-        }
-        if (r.first !in 200..299) {
-            if (r.first == 404) model = null
-            throw RuntimeException("HTTP ${r.first} ($m): ${r.second.take(120)}")
-        }
-        val cands = JSONObject(r.second).optJSONArray("candidates") ?: return null
+    private fun parse(resp: String): Int? {
+        val cands = JSONObject(resp).optJSONArray("candidates") ?: return null
         if (cands.length() == 0) return null
         val parts = cands.getJSONObject(0).optJSONObject("content")?.optJSONArray("parts") ?: return null
         val sb = StringBuilder()
         for (i in 0 until parts.length()) sb.append(parts.getJSONObject(i).optString("text"))
         val f = Regex("\"id\"\\s*:\\s*(\\d+)").findAll(sb).lastOrNull() ?: return null
         return f.groupValues[1].toIntOrNull()
+    }
+
+    fun ask(apiKey: String, screenText: String): Int? {
+        val list = loadModels(apiKey)
+        var lastErr = "không có model"
+        var tries = 0
+        while (tries < list.size) {
+            val m = list[idx % list.size]
+            var r = post(apiKey, m, buildBody(screenText, useNoThinking))
+            if (r.first == 400 && useNoThinking) {
+                useNoThinking = false
+                r = post(apiKey, m, buildBody(screenText, false))
+            }
+            if (r.first in 200..299) return parse(r.second)
+            lastErr = "HTTP ${r.first} ($m): ${r.second.take(120)}"
+            if (r.first == 429 || r.first == 404) {
+                idx++
+                tries++
+                continue
+            }
+            throw RuntimeException(lastErr)
+        }
+        models = null
+        throw RuntimeException(lastErr)
     }
 }
