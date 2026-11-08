@@ -40,6 +40,7 @@ class AutoAnswerService : AccessibilityService() {
     private var cooldownUntil = 0L
     private var status = ""
     private var warnedNoOcr = false
+    private var lastSent = ""
 
     private val loop = object : Runnable {
         override fun run() {
@@ -58,6 +59,12 @@ class AutoAnswerService : AccessibilityService() {
             maxLines = 3
             maxWidth = 700
             setOnClickListener { toggle() }
+            setOnLongClickListener {
+                val cm = this@AutoAnswerService.getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("ai-input", lastSent))
+                toast("Đã sao chép dữ liệu app đọc được (dán vào chat để xem)")
+                true
+            }
         }
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -169,6 +176,7 @@ class AutoAnswerService : AccessibilityService() {
         busy = true
         setStatus("đang hỏi AI…")
         val text = items.mapIndexed { i, it -> "[${i + 1}] ${it.text}" }.joinToString("\n")
+        lastSent = text
         exec.execute {
             var gotId: Int? = null
             var gotErr: String? = null
