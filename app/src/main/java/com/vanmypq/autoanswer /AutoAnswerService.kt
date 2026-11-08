@@ -61,7 +61,7 @@ class AutoAnswerService : AccessibilityService() {
             setOnClickListener { toggle() }
             setOnLongClickListener {
                 val cm = this@AutoAnswerService.getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                cm.setPrimaryClip(android.content.ClipData.newPlainText("ai-input", lastSent))
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("ai-input", ClaudeClient.lastInfo + "\n\n" + lastSent))
                 toast("Đã sao chép dữ liệu app đọc được (dán vào chat để xem)")
                 true
             }
@@ -188,8 +188,9 @@ class AutoAnswerService : AccessibilityService() {
         }
         lastHash = h
         busy = true
-        setStatus("đang hỏi AI…")
-        val text = items.mapIndexed { i, it -> "[${i + 1}] ${it.text}" }.joinToString("\n")
+        val hasImg = CaptureService.isRunning()
+        setStatus(if (hasImg) "đang hỏi AI (có ảnh)…" else "đang hỏi AI (KHÔNG ẢNH)…")
+        val text = buildPrompt(items)
         lastSent = text
         exec.execute {
             var gotId: Int? = null
@@ -212,7 +213,7 @@ class AutoAnswerService : AccessibilityService() {
                     toast(err)
                 } else if (id != null && id >= 1 && id <= items.size) {
                     retries = 0
-                    status = "chọn $id: " + items[id - 1].text.take(25)
+                    status = "chọn $id: " + items[id - 1].text.take(25) + (if (hasImg) "" else " ⚠không ảnh")
                     refresh()
                     cooldownUntil = SystemClock.uptimeMillis() + 3500
                     choose(items[id - 1], items.subList(0, id - 1).count { it.text == items[id - 1].text })
@@ -227,6 +228,37 @@ class AutoAnswerService : AccessibilityService() {
                 }
             }
         }
+    }
+
+    // Ghép các mảnh công thức rời rạc (mỗi ký tự một nút) thành một dòng "(công thức)" cho AI dễ đọc.
+    // Các phần tử còn lại vẫn giữ số thứ tự gốc để AI trả về đúng số cần chạm.
+    private fun buildPrompt(items: List<Item>): String {
+        val sb = StringBuilder()
+        val run = ArrayList<Int>()
+        fun flush() {
+            if (run.isEmpty()) return
+            val joined = run.joinToString("") { items[it].text }
+            val formulaLike = joined.any { !it.isLetterOrDigit() || Character.isSurrogate(it) }
+            if (run.size >= 3 && formulaLike) {
+                sb.append("(công thức) ").append(joined).append('\n')
+            } else {
+                for (k in run) sb.append("[${k + 1}] ").append(items[k].text).append('\n')
+            }
+            run.clear()
+        }
+        for ((i, it) in items.withIndex()) {
+            val t = it.text
+            val isChoiceLetter = t.length == 1 && t[0] in 'A'..'D'
+            val short = t.length <= 2 && !isChoiceLetter && !t.startsWith("(")
+            if (short) {
+                run.add(i)
+            } else {
+                flush()
+                sb.append("[${i + 1}] ").append(t).append('\n')
+            }
+        }
+        flush()
+        return sb.toString().trimEnd()
     }
 
     private fun layoutOf(list: List<Item>): Int =
