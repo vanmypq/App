@@ -7,25 +7,30 @@ import java.net.SocketTimeoutException
 import java.net.URL
 
 // Giữ tên ClaudeClient để không phải sửa file khác. Thực tế gọi Google Gemini API.
-// Tự dò model; model nào hết hạn mức (429), không có (404) hoặc quá chậm (timeout) thì chuyển model kế tiếp.
-// Với mỗi model, tự thử các cách cấu hình "suy nghĩ" khác nhau khi gặp lỗi 400 và nhớ cách chạy được.
+// Ưu tiên model Flash đầy đủ (suy luận tốt hơn); chỉ tạm chuyển sang Flash-Lite khi lỗi/hết hạn mức,
+// và sau 5 phút tự thử lại model tốt nhất.
 object ClaudeClient {
     private const val BASE = "https://generativelanguage.googleapis.com/v1beta"
     private var models: List<String>? = null
     private var idx = 0
+    private var switchedAt = 0L
     private val modeOf = HashMap<String, Int>()
-    // mode 0: thinkingBudget=0 | 1: thinkingLevel=minimal | 2: không cấu hình suy nghĩ | 3: như 2 nhưng bỏ ảnh
+    // mode 0: thinkingBudget=1024 | 1: thinkingLevel=low | 2: không cấu hình suy nghĩ | 3: như 2 nhưng bỏ ảnh
 
-    private const val SYSTEM = "Bạn là giáo viên giải bài trắc nghiệm. Người dùng gửi danh sách các phần tử " +
-        "chữ trên màn hình điện thoại, mỗi dòng dạng [số] nội dung, và có thể kèm ẢNH CHỤP đúng màn hình " +
-        "hiện tại. Hãy dùng ảnh để đọc công thức toán, hình vẽ, bảng biểu mà danh sách chữ không có hoặc bị " +
-        "dính chữ (ví dụ số mũ viết liền 'y2' nghĩa là y bình phương). Danh sách chữ dùng để xác định số " +
-        "[id] của phần tử cần bấm. Nếu có một câu hỏi trắc nghiệm kèm các đáp án: đọc kỹ câu hỏi, đặc biệt " +
-        "câu PHỦ ĐỊNH (KHÔNG PHẢI, KHÔNG LÀ, SAI, NGOẠI TRỪ thì phải chọn phương án KHÔNG thỏa điều kiện), " +
-        "kiểm tra từng phương án rồi mới chọn. Chỉ phân tích thật ngắn gọn (tối đa 4 dòng). Dòng cuối cùng " +
-        "của câu trả lời phải là JSON duy nhất: {\"id\": N} với N là số của phần tử đáp án cần bấm (ưu tiên " +
-        "phần tử chữ cái A/B/C/D của đáp án đó, hoặc phần tử chứa nội dung đáp án). Nếu màn hình không có " +
-        "câu trắc nghiệm hoặc không chắc chắn, trả {\"id\": null}."
+    @Volatile var lastInfo: String = ""
+
+    private const val SYSTEM = "Bạn là giáo viên Toán/Khoa học THCS Việt Nam giải bài trắc nghiệm. Người dùng gửi " +
+        "danh sách các phần tử chữ trên màn hình điện thoại, mỗi dòng dạng [số] nội dung, và có thể kèm ẢNH " +
+        "CHỤP đúng màn hình hiện tại. Hãy dùng ảnh để đọc công thức toán, hình vẽ, bảng biểu mà danh sách chữ " +
+        "không có hoặc bị dính chữ (ví dụ số mũ viết liền 'y2' nghĩa là y bình phương). Dòng '(công thức)' là " +
+        "công thức đã được ghép lại và nằm ngay sau chữ cái đáp án đứng trước nó. Danh sách chữ dùng để xác " +
+        "định số [id] của phần tử cần bấm. Nếu có một câu hỏi trắc nghiệm kèm các đáp án: đọc kỹ câu hỏi, " +
+        "đặc biệt câu PHỦ ĐỊNH (KHÔNG PHẢI, KHÔNG LÀ, SAI, NGOẠI TRỪ thì phải chọn phương án KHÔNG thỏa điều " +
+        "kiện), áp dụng đúng định nghĩa trong sách giáo khoa, kiểm tra TỪNG phương án (chú ý các bẫy như hệ " +
+        "số bằng 0, số mũ, mẫu số chứa ẩn) rồi mới chọn. Chỉ ghi phân tích ngắn gọn (tối đa 6 dòng). Dòng " +
+        "cuối cùng của câu trả lời phải là JSON duy nhất: {\"id\": N} với N là số của phần tử đáp án cần bấm " +
+        "(ưu tiên phần tử chữ cái A/B/C/D của đáp án đó, hoặc phần tử chứa nội dung đáp án). Nếu màn hình " +
+        "không có câu trắc nghiệm hoặc không chắc chắn, trả {\"id\": null}."
 
     private fun loadModels(apiKey: String): List<String> {
         models?.let { return it }
@@ -67,9 +72,9 @@ object ClaudeClient {
             parts.put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", img)))
         }
         parts.put(JSONObject().put("text", screenText))
-        val gen = JSONObject().put("maxOutputTokens", 1024)
-        if (mode == 0) gen.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
-        if (mode == 1) gen.put("thinkingConfig", JSONObject().put("thinkingLevel", "minimal"))
+        val gen = JSONObject().put("maxOutputTokens", 4096)
+        if (mode == 0) gen.put("thinkingConfig", JSONObject().put("thinkingBudget", 1024))
+        if (mode == 1) gen.put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
         return JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", SYSTEM))))
             .put("contents", JSONArray().put(JSONObject()
@@ -83,7 +88,7 @@ object ClaudeClient {
             val c = URL("$BASE/models/$m:generateContent").openConnection() as HttpURLConnection
             c.requestMethod = "POST"
             c.connectTimeout = 8000
-            c.readTimeout = 30000
+            c.readTimeout = 45000
             c.doOutput = true
             c.setRequestProperty("Content-Type", "application/json")
             c.setRequestProperty("x-goog-api-key", apiKey)
@@ -96,19 +101,19 @@ object ClaudeClient {
         }
     }
 
-    private fun parse(resp: String): Int? {
-        val cands = JSONObject(resp).optJSONArray("candidates") ?: return null
-        if (cands.length() == 0) return null
-        val parts = cands.getJSONObject(0).optJSONObject("content")?.optJSONArray("parts") ?: return null
+    private fun replyText(resp: String): String {
+        val cands = JSONObject(resp).optJSONArray("candidates") ?: return ""
+        if (cands.length() == 0) return ""
+        val parts = cands.getJSONObject(0).optJSONObject("content")?.optJSONArray("parts") ?: return ""
         val sb = StringBuilder()
         for (i in 0 until parts.length()) sb.append(parts.getJSONObject(i).optString("text"))
-        val f = Regex("\"id\"\\s*:\\s*(\\d+)").findAll(sb).lastOrNull() ?: return null
-        return f.groupValues[1].toIntOrNull()
+        return sb.toString()
     }
 
     fun ask(apiKey: String, screenText: String): Int? {
         val img: String? = try { CaptureService.grab() } catch (e: Exception) { null }
         val list = loadModels(apiKey)
+        if (idx != 0 && System.currentTimeMillis() - switchedAt > 300000L) idx = 0
         var lastErr = "không có model"
         var tries = 0
         while (tries < list.size) {
@@ -122,11 +127,16 @@ object ClaudeClient {
             }
             if (r.first in 200..299) {
                 modeOf[m] = mode
-                return parse(r.second)
+                val text = replyText(r.second)
+                lastInfo = "Model: $m | Ảnh: " + (if (img != null && mode < 3) "CÓ" else "KHÔNG") +
+                    " | Chế độ suy nghĩ: $mode\nAI trả lời:\n$text"
+                val f = Regex("\"id\"\\s*:\\s*(\\d+)").findAll(text).lastOrNull() ?: return null
+                return f.groupValues[1].toIntOrNull()
             }
             lastErr = "HTTP ${r.first} ($m): ${r.second.take(120)}"
             if (r.first == 429 || r.first == 404 || r.first == 408 || r.first == 500 || r.first == 503) {
                 idx++
+                switchedAt = System.currentTimeMillis()
                 tries++
                 continue
             }
