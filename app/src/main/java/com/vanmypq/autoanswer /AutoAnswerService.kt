@@ -121,21 +121,35 @@ class AutoAnswerService : AccessibilityService() {
         }
     }
 
+    // Gom toàn bộ chữ của một nút và các nút con (dùng cho công thức toán bị ẩn khỏi màn hình).
+    private fun gather(n: AccessibilityNodeInfo, depth: Int): String {
+        if (depth > 12) return ""
+        val sb = StringBuilder()
+        val t = (n.text ?: n.contentDescription)?.toString()
+        if (!t.isNullOrEmpty()) sb.append(t)
+        for (i in 0 until n.childCount) n.getChild(i)?.let { sb.append(gather(it, depth + 1)) }
+        return sb.toString()
+    }
+
     private fun collect(): List<Item> {
         val out = ArrayList<Item>()
         val root = rootInActiveWindow ?: return out
-        fun walk(n: AccessibilityNodeInfo, depth: Int) {
-            if (out.size >= 150 || depth > 40) return
+        fun walk(n: AccessibilityNodeInfo, depth: Int, parentVisible: Boolean, parentRect: Rect) {
+            if (out.size >= 200 || depth > 40) return
             if (n.isVisibleToUser) {
+                val r = Rect(); n.getBoundsInScreen(r)
                 val t = (n.text ?: n.contentDescription)?.toString()?.trim()
-                if (!t.isNullOrEmpty()) {
-                    val r = Rect(); n.getBoundsInScreen(r)
-                    if (!r.isEmpty) out.add(Item(t.take(400), r, n))
+                if (!t.isNullOrEmpty() && !r.isEmpty) out.add(Item(t.take(400), r, n))
+                for (i in 0 until n.childCount) n.getChild(i)?.let { walk(it, depth + 1, true, r) }
+            } else if (parentVisible) {
+                // Nút ẩn nằm trong nút đang hiện (ví dụ công thức KaTeX/MathML): lấy chữ, chạm vào vùng của nút cha.
+                val t = gather(n, 0).trim()
+                if (t.isNotEmpty() && !parentRect.isEmpty) {
+                    out.add(Item("(công thức) " + t.take(300), Rect(parentRect), n))
                 }
             }
-            for (i in 0 until n.childCount) n.getChild(i)?.let { walk(it, depth + 1) }
         }
-        walk(root, 0)
+        walk(root, 0, false, Rect())
         return out
     }
 
