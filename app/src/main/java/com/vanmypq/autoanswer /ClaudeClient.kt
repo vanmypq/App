@@ -13,12 +13,15 @@ object ClaudeClient {
     private var idx = 0
     private var useNoThinking = true
 
-    private const val SYSTEM = "Bạn là trợ lý làm bài trắc nghiệm. Người dùng gửi danh sách các phần tử " +
-        "chữ trên màn hình điện thoại, mỗi dòng dạng [số] nội dung. Nếu có một câu hỏi trắc nghiệm kèm các " +
-        "đáp án, hãy giải thật ngắn gọn (tối đa 3 câu) rồi chọn đáp án đúng nhất. Dòng cuối cùng của câu " +
-        "trả lời phải là JSON duy nhất: {\"id\": N} với N là số của phần tử đáp án cần bấm (ưu tiên phần tử " +
-        "chứa nội dung đáp án, hoặc chữ cái A/B/C/D của đáp án đó). Nếu màn hình không có câu trắc nghiệm " +
-        "hoặc không chắc chắn, trả {\"id\": null}."
+    private const val SYSTEM = "Bạn là giáo viên giải bài trắc nghiệm. Người dùng gửi danh sách các phần tử " +
+        "chữ trên màn hình điện thoại, mỗi dòng dạng [số] nội dung. Văn bản được trình duyệt đọc ra nên công " +
+        "thức toán có thể bị dính chữ (ví dụ số mũ viết liền: 'y2' nghĩa là y bình phương, '3x2' là 3x bình " +
+        "phương). Nếu có một câu hỏi trắc nghiệm kèm các đáp án: đọc kỹ câu hỏi, đặc biệt câu PHỦ ĐỊNH " +
+        "(KHÔNG PHẢI, SAI, NGOẠI TRỪ thì phải chọn phương án KHÔNG thỏa điều kiện), kiểm tra từng phương án " +
+        "rồi mới chọn. Chỉ phân tích ngắn gọn (tối đa 8 dòng). Dòng cuối cùng của câu trả lời phải là JSON " +
+        "duy nhất: {\"id\": N} với N là số của phần tử đáp án cần bấm (ưu tiên phần tử chữ cái A/B/C/D của " +
+        "đáp án đó, hoặc phần tử chứa nội dung đáp án). Nếu màn hình không có câu trắc nghiệm hoặc không chắc " +
+        "chắn, trả {\"id\": null}."
 
     private fun loadModels(apiKey: String): List<String> {
         models?.let { return it }
@@ -55,8 +58,8 @@ object ClaudeClient {
     }
 
     private fun buildBody(screenText: String, noThinking: Boolean): JSONObject {
-        val gen = JSONObject().put("maxOutputTokens", 800)
-        if (noThinking) gen.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+        val gen = JSONObject().put("maxOutputTokens", 4096)
+        if (noThinking) gen.put("thinkingConfig", JSONObject().put("thinkingBudget", 1024))
         return JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", SYSTEM))))
             .put("contents", JSONArray().put(JSONObject()
@@ -69,7 +72,7 @@ object ClaudeClient {
         val c = URL("$BASE/models/$m:generateContent").openConnection() as HttpURLConnection
         c.requestMethod = "POST"
         c.connectTimeout = 10000
-        c.readTimeout = 40000
+        c.readTimeout = 60000
         c.doOutput = true
         c.setRequestProperty("Content-Type", "application/json")
         c.setRequestProperty("x-goog-api-key", apiKey)
