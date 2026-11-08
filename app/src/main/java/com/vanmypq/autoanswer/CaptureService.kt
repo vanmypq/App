@@ -28,6 +28,7 @@ class CaptureService : Service() {
         @Volatile private var cached: String? = null
         @Volatile private var w = 0
         @Volatile private var h = 0
+        @Volatile var lastError: String = ""
 
         fun isRunning(): Boolean = reader != null
 
@@ -67,54 +68,70 @@ class CaptureService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(
-            NotificationChannel("cap", "Chụp màn hình", NotificationManager.IMPORTANCE_LOW)
-        )
-        val n = Notification.Builder(this, "cap")
-            .setContentTitle("Auto Trắc Nghiệm")
-            .setContentText("Đang cho phép chụp màn hình để AI đọc công thức")
-            .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .build()
-        startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        try {
+            lastError = ""
+            val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            nm.createNotificationChannel(
+                NotificationChannel("cap", "Chụp màn hình", NotificationManager.IMPORTANCE_LOW)
+            )
+            val n = Notification.Builder(this, "cap")
+                .setContentTitle("Auto Trắc Nghiệm")
+                .setContentText("Đang cho phép chụp màn hình để AI đọc công thức")
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .build()
+            startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
 
-        val code = intent?.getIntExtra("code", 0) ?: 0
-        val data: Intent? = intent?.getParcelableExtra("data")
-        if (data == null) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val mp = mpm.getMediaProjection(code, data)
-        projection = mp
-        mp.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() {
+            val code = intent?.getIntExtra("code", 0) ?: 0
+            val data: Intent? = intent?.getParcelableExtra("data")
+            if (data == null) {
+                lastError = "Không nhận được dữ liệu cấp quyền từ hệ thống"
                 release()
+                return START_NOT_STICKY
             }
-        }, Handler(Looper.getMainLooper()))
+            val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val mp = mpm.getMediaProjection(code, data)
+            projection = mp
+            mp.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    release()
+                }
+            }, Handler(Looper.getMainLooper()))
 
-        val real = DisplayMetrics()
-        @Suppress("DEPRECATION")
-        (getSystemService(WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(real)
-        val scale = 1600f / maxOf(real.widthPixels, real.heightPixels)
-        w = (real.widthPixels * scale).toInt()
-        h = (real.heightPixels * scale).toInt()
-        val r = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
-        reader = r
-        display = mp.createVirtualDisplay(
-            "autoanswer-cap", w, h, real.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, r.surface, null, null
-        )
+            val real = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            (getSystemService(WINDOW_SERVICE) as WindowManager).defaultDisplay.getRealMetrics(real)
+            val scale = 1600f / maxOf(real.widthPixels, real.heightPixels)
+            w = (real.widthPixels * scale).toInt()
+            h = (real.heightPixels * scale).toInt()
+            val r = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
+            display = mp.createVirtualDisplay(
+                "autoanswer-cap", w, h, real.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, r.surface, null, null
+            )
+            reader = r
+        } catch (e: Throwable) {
+            lastError = e.javaClass.simpleName + ": " + (e.message ?: "")
+            release()
+        }
         return START_NOT_STICKY
     }
 
     private fun release() {
-        display?.release()
+        try {
+            display?.release()
+        } catch (e: Exception) {
+        }
         display = null
-        reader?.close()
+        try {
+            reader?.close()
+        } catch (e: Exception) {
+        }
         reader = null
         cached = null
-        projection?.stop()
+        try {
+            projection?.stop()
+        } catch (e: Exception) {
+        }
         projection = null
         stopSelf()
     }
