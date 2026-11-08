@@ -7,12 +7,14 @@ import java.net.SocketTimeoutException
 import java.net.URL
 
 // Giữ tên ClaudeClient để không phải sửa file khác. Thực tế gọi Google Gemini API.
-// Tự dò model; model nào hết hạn mức (429), không có (404) hoặc quá chậm (timeout) thì chuyển model kế tiếp và nhớ lại.
+// Tự dò model; model nào hết hạn mức (429), không có (404) hoặc quá chậm (timeout) thì chuyển model kế tiếp.
+// Với mỗi model, tự thử các cách cấu hình "suy nghĩ" khác nhau khi gặp lỗi 400 và nhớ cách chạy được.
 object ClaudeClient {
     private const val BASE = "https://generativelanguage.googleapis.com/v1beta"
     private var models: List<String>? = null
     private var idx = 0
-    private var thinkMode = 0 // 0: thinkingBudget=0, 1: thinkingLevel=minimal, 2: không cấu hình
+    private val modeOf = HashMap<String, Int>()
+    // mode 0: thinkingBudget=0 | 1: thinkingLevel=minimal | 2: không cấu hình suy nghĩ | 3: như 2 nhưng bỏ ảnh
 
     private const val SYSTEM = "Bạn là giáo viên giải bài trắc nghiệm. Người dùng gửi danh sách các phần tử " +
         "chữ trên màn hình điện thoại, mỗi dòng dạng [số] nội dung, và có thể kèm ẢNH CHỤP đúng màn hình " +
@@ -61,7 +63,7 @@ object ClaudeClient {
 
     private fun buildBody(screenText: String, mode: Int, img: String?): JSONObject {
         val parts = JSONArray()
-        if (img != null) {
+        if (img != null && mode < 3) {
             parts.put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", img)))
         }
         parts.put(JSONObject().put("text", screenText))
@@ -111,12 +113,17 @@ object ClaudeClient {
         var tries = 0
         while (tries < list.size) {
             val m = list[idx % list.size]
-            var r = post(apiKey, m, buildBody(screenText, thinkMode, img))
-            while (r.first == 400 && thinkMode < 2 && r.second.contains("think", ignoreCase = true)) {
-                thinkMode++
-                r = post(apiKey, m, buildBody(screenText, thinkMode, img))
+            var mode = modeOf[m] ?: 0
+            var r = post(apiKey, m, buildBody(screenText, mode, img))
+            while (r.first == 400 && mode < 3 && !r.second.contains("API key", ignoreCase = true)) {
+                mode++
+                if (mode == 3 && img == null) break
+                r = post(apiKey, m, buildBody(screenText, mode, img))
             }
-            if (r.first in 200..299) return parse(r.second)
+            if (r.first in 200..299) {
+                modeOf[m] = mode
+                return parse(r.second)
+            }
             lastErr = "HTTP ${r.first} ($m): ${r.second.take(120)}"
             if (r.first == 429 || r.first == 404 || r.first == 408 || r.first == 500 || r.first == 503) {
                 idx++
