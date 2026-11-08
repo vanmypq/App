@@ -182,7 +182,7 @@ class AutoAnswerService : AccessibilityService() {
                     toast(err)
                 } else if (id != null && id >= 1 && id <= items.size) {
                     retries = 0
-                    status = "đã chọn mục $id"
+                    status = "chọn $id: " + items[id - 1].text.take(25)
                     refresh()
                     choose(items[id - 1])
                 } else if (retries < 2) {
@@ -199,30 +199,40 @@ class AutoAnswerService : AccessibilityService() {
     }
 
     private fun choose(item: Item) {
-        val n = item.node
-        if (n != null) {
-            n.refresh()
-            val maxH = resources.displayMetrics.heightPixels * 0.5
-            var cur: AccessibilityNodeInfo? = n
-            var depth = 0
-            while (cur != null && depth < 6) {
-                if (cur.isClickable && cur.isEnabled) {
-                    val b = Rect(); cur.getBoundsInScreen(b)
-                    if (b.height() < maxH && cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return
-                    break
-                }
-                cur = cur.parent
-                depth++
-            }
+        tap(item.rect) { ok ->
+            if (!ok) clickNode(item.node)
         }
-        tap(item.rect)
     }
 
-    private fun tap(r: Rect) {
-        val p = Path().apply { moveTo(r.exactCenterX(), r.exactCenterY()) }
+    private fun clickNode(n: AccessibilityNodeInfo?) {
+        if (n == null) return
+        n.refresh()
+        val maxH = resources.displayMetrics.heightPixels * 0.5
+        var cur: AccessibilityNodeInfo? = n
+        var depth = 0
+        while (cur != null && depth < 6) {
+            if (cur.isClickable && cur.isEnabled) {
+                val b = Rect(); cur.getBoundsInScreen(b)
+                if (b.height() < maxH && cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return
+                break
+            }
+            cur = cur.parent
+            depth++
+        }
+    }
+
+    private fun tap(r: Rect, onDone: (Boolean) -> Unit) {
+        val dm = resources.displayMetrics
+        val x = r.exactCenterX().coerceIn(2f, dm.widthPixels - 2f)
+        val y = r.exactCenterY().coerceIn(2f, dm.heightPixels - 2f)
+        val p = Path().apply { moveTo(x, y) }
         val g = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(p, 0, 60)).build()
-        dispatchGesture(g, null, null)
+            .addStroke(GestureDescription.StrokeDescription(p, 0, 100)).build()
+        val ok = dispatchGesture(g, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) { onDone(true) }
+            override fun onCancelled(gestureDescription: GestureDescription?) { onDone(false) }
+        }, handler)
+        if (!ok) onDone(false)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
