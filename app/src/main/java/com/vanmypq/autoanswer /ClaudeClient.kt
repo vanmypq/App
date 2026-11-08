@@ -3,32 +3,33 @@ package com.vanmypq.autoanswer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 
 // Giữ tên ClaudeClient để không phải sửa file khác. Thực tế gọi Google Gemini API.
-// Tự dò model, nếu model này hết hạn mức (429) hoặc không có (404) thì tự thử model kế tiếp.
+// Tự dò model; model nào hết hạn mức (429), không có (404) hoặc quá chậm (timeout) thì chuyển model kế tiếp và nhớ lại.
 object ClaudeClient {
     private const val BASE = "https://generativelanguage.googleapis.com/v1beta"
     private var models: List<String>? = null
     private var idx = 0
-    private var useNoThinking = true
+    private var thinkMode = 0 // 0: thinkingBudget=0, 1: thinkingLevel=minimal, 2: không cấu hình
 
     private const val SYSTEM = "Bạn là giáo viên giải bài trắc nghiệm. Người dùng gửi danh sách các phần tử " +
         "chữ trên màn hình điện thoại, mỗi dòng dạng [số] nội dung, và có thể kèm ẢNH CHỤP đúng màn hình " +
         "hiện tại. Hãy dùng ảnh để đọc công thức toán, hình vẽ, bảng biểu mà danh sách chữ không có hoặc bị " +
         "dính chữ (ví dụ số mũ viết liền 'y2' nghĩa là y bình phương). Danh sách chữ dùng để xác định số " +
         "[id] của phần tử cần bấm. Nếu có một câu hỏi trắc nghiệm kèm các đáp án: đọc kỹ câu hỏi, đặc biệt " +
-        "câu PHỦ ĐỊNH (KHÔNG PHẢI, SAI, NGOẠI TRỪ thì phải chọn phương án KHÔNG thỏa điều kiện), kiểm tra " +
-        "từng phương án rồi mới chọn. Chỉ phân tích ngắn gọn (tối đa 8 dòng). Dòng cuối cùng của câu trả lời " +
-        "phải là JSON duy nhất: {\"id\": N} với N là số của phần tử đáp án cần bấm (ưu tiên phần tử chữ cái " +
-        "A/B/C/D của đáp án đó, hoặc phần tử chứa nội dung đáp án). Nếu màn hình không có câu trắc nghiệm " +
-        "hoặc không chắc chắn, trả {\"id\": null}."
+        "câu PHỦ ĐỊNH (KHÔNG PHẢI, KHÔNG LÀ, SAI, NGOẠI TRỪ thì phải chọn phương án KHÔNG thỏa điều kiện), " +
+        "kiểm tra từng phương án rồi mới chọn. Chỉ phân tích thật ngắn gọn (tối đa 4 dòng). Dòng cuối cùng " +
+        "của câu trả lời phải là JSON duy nhất: {\"id\": N} với N là số của phần tử đáp án cần bấm (ưu tiên " +
+        "phần tử chữ cái A/B/C/D của đáp án đó, hoặc phần tử chứa nội dung đáp án). Nếu màn hình không có " +
+        "câu trắc nghiệm hoặc không chắc chắn, trả {\"id\": null}."
 
     private fun loadModels(apiKey: String): List<String> {
         models?.let { return it }
         val c = URL("$BASE/models?pageSize=200").openConnection() as HttpURLConnection
-        c.connectTimeout = 10000
-        c.readTimeout = 20000
+        c.connectTimeout = 8000
+        c.readTimeout = 15000
         c.setRequestProperty("x-goog-api-key", apiKey)
         val code = c.responseCode
         val txt = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().readText()
@@ -58,14 +59,15 @@ object ClaudeClient {
         return result
     }
 
-    private fun buildBody(screenText: String, noThinking: Boolean, img: String?): JSONObject {
+    private fun buildBody(screenText: String, mode: Int, img: String?): JSONObject {
         val parts = JSONArray()
         if (img != null) {
             parts.put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", img)))
         }
         parts.put(JSONObject().put("text", screenText))
-        val gen = JSONObject().put("maxOutputTokens", 4096)
-        if (noThinking) gen.put("thinkingConfig", JSONObject().put("thinkingBudget", 1024))
+        val gen = JSONObject().put("maxOutputTokens", 1024)
+        if (mode == 0) gen.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+        if (mode == 1) gen.put("thinkingConfig", JSONObject().put("thinkingLevel", "minimal"))
         return JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", SYSTEM))))
             .put("contents", JSONArray().put(JSONObject()
@@ -75,17 +77,21 @@ object ClaudeClient {
     }
 
     private fun post(apiKey: String, m: String, body: JSONObject): Pair<Int, String> {
-        val c = URL("$BASE/models/$m:generateContent").openConnection() as HttpURLConnection
-        c.requestMethod = "POST"
-        c.connectTimeout = 10000
-        c.readTimeout = 90000
-        c.doOutput = true
-        c.setRequestProperty("Content-Type", "application/json")
-        c.setRequestProperty("x-goog-api-key", apiKey)
-        c.outputStream.use { it.write(body.toString().toByteArray()) }
-        val code = c.responseCode
-        val resp = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().readText()
-        return Pair(code, resp)
+        try {
+            val c = URL("$BASE/models/$m:generateContent").openConnection() as HttpURLConnection
+            c.requestMethod = "POST"
+            c.connectTimeout = 8000
+            c.readTimeout = 30000
+            c.doOutput = true
+            c.setRequestProperty("Content-Type", "application/json")
+            c.setRequestProperty("x-goog-api-key", apiKey)
+            c.outputStream.use { it.write(body.toString().toByteArray()) }
+            val code = c.responseCode
+            val resp = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().readText()
+            return Pair(code, resp)
+        } catch (e: SocketTimeoutException) {
+            return Pair(408, "quá thời gian chờ")
+        }
     }
 
     private fun parse(resp: String): Int? {
@@ -105,14 +111,14 @@ object ClaudeClient {
         var tries = 0
         while (tries < list.size) {
             val m = list[idx % list.size]
-            var r = post(apiKey, m, buildBody(screenText, useNoThinking, img))
-            if (r.first == 400 && useNoThinking) {
-                useNoThinking = false
-                r = post(apiKey, m, buildBody(screenText, false, img))
+            var r = post(apiKey, m, buildBody(screenText, thinkMode, img))
+            while (r.first == 400 && thinkMode < 2 && r.second.contains("think", ignoreCase = true)) {
+                thinkMode++
+                r = post(apiKey, m, buildBody(screenText, thinkMode, img))
             }
             if (r.first in 200..299) return parse(r.second)
             lastErr = "HTTP ${r.first} ($m): ${r.second.take(120)}"
-            if (r.first == 429 || r.first == 404) {
+            if (r.first == 429 || r.first == 404 || r.first == 408 || r.first == 500 || r.first == 503) {
                 idx++
                 tries++
                 continue
