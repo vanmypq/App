@@ -35,6 +35,7 @@ class AutoAnswerService : AccessibilityService() {
     private var busy = false
     private var lastHash = 0
     private var currentHash = 0
+    private var layoutHash = 0
     private var retries = 0
     private var cooldownUntil = 0L
     private var status = ""
@@ -74,6 +75,7 @@ class AutoAnswerService : AccessibilityService() {
         auto = !auto
         lastHash = 0
         currentHash = 0
+        layoutHash = 0
         retries = 0
         cooldownUntil = 0L
         status = if (auto) "đang quét" else ""
@@ -157,6 +159,12 @@ class AutoAnswerService : AccessibilityService() {
         val h = items.joinToString("|") { it.text }.hashCode()
         if (h != currentHash) { currentHash = h; retries = 0 }
         if (h == lastHash) return
+        val lh = items.joinToString("|") { it.text + it.rect.flattenToString() }.hashCode()
+        if (lh != layoutHash) {
+            layoutHash = lh
+            setStatus("chờ trang ổn định…")
+            return
+        }
         lastHash = h
         busy = true
         setStatus("đang hỏi AI…")
@@ -184,7 +192,8 @@ class AutoAnswerService : AccessibilityService() {
                     retries = 0
                     status = "chọn $id: " + items[id - 1].text.take(25)
                     refresh()
-                    choose(items[id - 1])
+                    cooldownUntil = SystemClock.uptimeMillis() + 3500
+                    choose(items[id - 1], items.subList(0, id - 1).count { it.text == items[id - 1].text })
                 } else if (retries < 2) {
                     retries++
                     lastHash = 0
@@ -198,10 +207,39 @@ class AutoAnswerService : AccessibilityService() {
         }
     }
 
-    private fun choose(item: Item) {
-        tap(item.rect) { ok ->
-            if (!ok) clickNode(item.node)
+    private fun layoutOf(list: List<Item>): Int =
+        list.joinToString("|") { it.text + it.rect.flattenToString() }.hashCode()
+
+    // Lấy lại tọa độ mới nhất của đáp án (trang có thể đã dịch chuyển trong lúc chờ AI) rồi chạm.
+    private fun choose(item: Item, occurrence: Int) {
+        val fresh = collect().filter { it.text == item.text }
+        var target: Rect = item.rect
+        if (fresh.size > occurrence) {
+            target = fresh[occurrence].rect
+        } else {
+            val n = item.node
+            if (n != null) {
+                n.refresh()
+                val r = Rect()
+                n.getBoundsInScreen(r)
+                if (!r.isEmpty) target = r
+            }
         }
+        tap(target) { ok ->
+            if (!ok) clickNode(item.node)
+            afterTap()
+        }
+    }
+
+    // Sau khi chạm, coi màn hình hiện tại (có thể có lời giải/đáp án đúng) là "đã xem" để không hỏi lại.
+    private fun afterTap() {
+        handler.postDelayed({
+            val items2 = collect()
+            val h2 = items2.joinToString("|") { it.text }.hashCode()
+            lastHash = h2
+            currentHash = h2
+            layoutHash = layoutOf(items2)
+        }, 1500)
     }
 
     private fun clickNode(n: AccessibilityNodeInfo?) {
