@@ -14,14 +14,15 @@ object ClaudeClient {
     private var useNoThinking = true
 
     private const val SYSTEM = "Bạn là giáo viên giải bài trắc nghiệm. Người dùng gửi danh sách các phần tử " +
-        "chữ trên màn hình điện thoại, mỗi dòng dạng [số] nội dung. Văn bản được trình duyệt đọc ra nên công " +
-        "thức toán có thể bị dính chữ (ví dụ số mũ viết liền: 'y2' nghĩa là y bình phương, '3x2' là 3x bình " +
-        "phương). Nếu có một câu hỏi trắc nghiệm kèm các đáp án: đọc kỹ câu hỏi, đặc biệt câu PHỦ ĐỊNH " +
-        "(KHÔNG PHẢI, SAI, NGOẠI TRỪ thì phải chọn phương án KHÔNG thỏa điều kiện), kiểm tra từng phương án " +
-        "rồi mới chọn. Chỉ phân tích ngắn gọn (tối đa 8 dòng). Dòng cuối cùng của câu trả lời phải là JSON " +
-        "duy nhất: {\"id\": N} với N là số của phần tử đáp án cần bấm (ưu tiên phần tử chữ cái A/B/C/D của " +
-        "đáp án đó, hoặc phần tử chứa nội dung đáp án). Nếu màn hình không có câu trắc nghiệm hoặc không chắc " +
-        "chắn, trả {\"id\": null}."
+        "chữ trên màn hình điện thoại, mỗi dòng dạng [số] nội dung, và có thể kèm ẢNH CHỤP đúng màn hình " +
+        "hiện tại. Hãy dùng ảnh để đọc công thức toán, hình vẽ, bảng biểu mà danh sách chữ không có hoặc bị " +
+        "dính chữ (ví dụ số mũ viết liền 'y2' nghĩa là y bình phương). Danh sách chữ dùng để xác định số " +
+        "[id] của phần tử cần bấm. Nếu có một câu hỏi trắc nghiệm kèm các đáp án: đọc kỹ câu hỏi, đặc biệt " +
+        "câu PHỦ ĐỊNH (KHÔNG PHẢI, SAI, NGOẠI TRỪ thì phải chọn phương án KHÔNG thỏa điều kiện), kiểm tra " +
+        "từng phương án rồi mới chọn. Chỉ phân tích ngắn gọn (tối đa 8 dòng). Dòng cuối cùng của câu trả lời " +
+        "phải là JSON duy nhất: {\"id\": N} với N là số của phần tử đáp án cần bấm (ưu tiên phần tử chữ cái " +
+        "A/B/C/D của đáp án đó, hoặc phần tử chứa nội dung đáp án). Nếu màn hình không có câu trắc nghiệm " +
+        "hoặc không chắc chắn, trả {\"id\": null}."
 
     private fun loadModels(apiKey: String): List<String> {
         models?.let { return it }
@@ -57,14 +58,19 @@ object ClaudeClient {
         return result
     }
 
-    private fun buildBody(screenText: String, noThinking: Boolean): JSONObject {
+    private fun buildBody(screenText: String, noThinking: Boolean, img: String?): JSONObject {
+        val parts = JSONArray()
+        if (img != null) {
+            parts.put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", img)))
+        }
+        parts.put(JSONObject().put("text", screenText))
         val gen = JSONObject().put("maxOutputTokens", 4096)
         if (noThinking) gen.put("thinkingConfig", JSONObject().put("thinkingBudget", 1024))
         return JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", SYSTEM))))
             .put("contents", JSONArray().put(JSONObject()
                 .put("role", "user")
-                .put("parts", JSONArray().put(JSONObject().put("text", screenText)))))
+                .put("parts", parts)))
             .put("generationConfig", gen)
     }
 
@@ -72,7 +78,7 @@ object ClaudeClient {
         val c = URL("$BASE/models/$m:generateContent").openConnection() as HttpURLConnection
         c.requestMethod = "POST"
         c.connectTimeout = 10000
-        c.readTimeout = 60000
+        c.readTimeout = 90000
         c.doOutput = true
         c.setRequestProperty("Content-Type", "application/json")
         c.setRequestProperty("x-goog-api-key", apiKey)
@@ -93,15 +99,16 @@ object ClaudeClient {
     }
 
     fun ask(apiKey: String, screenText: String): Int? {
+        val img: String? = try { CaptureService.grab() } catch (e: Exception) { null }
         val list = loadModels(apiKey)
         var lastErr = "không có model"
         var tries = 0
         while (tries < list.size) {
             val m = list[idx % list.size]
-            var r = post(apiKey, m, buildBody(screenText, useNoThinking))
+            var r = post(apiKey, m, buildBody(screenText, useNoThinking, img))
             if (r.first == 400 && useNoThinking) {
                 useNoThinking = false
-                r = post(apiKey, m, buildBody(screenText, false))
+                r = post(apiKey, m, buildBody(screenText, false, img))
             }
             if (r.first in 200..299) return parse(r.second)
             lastErr = "HTTP ${r.first} ($m): ${r.second.take(120)}"
