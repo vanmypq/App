@@ -162,30 +162,37 @@ class AutoAnswerService : AccessibilityService() {
         setStatus("đang hỏi AI…")
         val text = items.mapIndexed { i, it -> "[${i + 1}] ${it.text}" }.joinToString("\n")
         exec.execute {
-            var id: Int? = null
-            var err: String? = null
+            var gotId: Int? = null
+            var gotErr: String? = null
             try {
-                id = ClaudeClient.ask(key, text)
+                gotId = ClaudeClient.ask(key, text)
             } catch (e: Exception) {
-                err = e.message ?: "lỗi mạng"
+                gotErr = e.message ?: "lỗi mạng"
             }
+            val id: Int? = gotId
+            val err: String? = gotErr
             handler.post {
                 busy = false
                 if (err != null) {
                     lastHash = 0
-                    cooldownUntil = SystemClock.uptimeMillis() + 6000
-                    status = "lỗi: ${err.take(80)}"; refresh()
+                    val wait = if (err.contains("429")) 30000L else 6000L
+                    cooldownUntil = SystemClock.uptimeMillis() + wait
+                    status = "lỗi: " + err.take(80)
+                    refresh()
                     toast(err)
-                } else if (id != null && id in 1..items.size) {
+                } else if (id != null && id >= 1 && id <= items.size) {
                     retries = 0
-                    status = "đã chọn mục $id"; refresh()
+                    status = "đã chọn mục $id"
+                    refresh()
                     choose(items[id - 1])
                 } else if (retries < 2) {
                     retries++
                     lastHash = 0
-                    status = "thử lại ($retries)"; refresh()
+                    status = "thử lại ($retries)"
+                    refresh()
                 } else {
-                    status = "không thấy câu hỏi"; refresh()
+                    status = "không thấy câu hỏi"
+                    refresh()
                 }
             }
         }
