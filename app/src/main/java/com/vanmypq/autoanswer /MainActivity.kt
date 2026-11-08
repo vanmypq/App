@@ -21,9 +21,9 @@ class MainActivity : Activity() {
         }
         root.addView(TextView(this).apply {
             text = "Auto Trắc Nghiệm\n\n1) Nhập Google Gemini API key và bấm Lưu.\n" +
-                "2) Bấm \"Bật dịch vụ Trợ năng\", tìm \"Auto Trắc Nghiệm\" và bật.\n" +
-                "3) Bấm \"Cấp quyền chụp màn hình\" rồi chọn Bắt đầu ngay (để AI nhìn thấy công thức, hình vẽ). " +
-                "Cần làm lại mỗi lần khởi động lại điện thoại hoặc cài lại app.\n" +
+                "2) Bấm \"Cấp quyền chụp màn hình\" rồi chọn Bắt đầu ngay (để AI nhìn thấy công thức, hình vẽ). " +
+                "Nên làm bước này TRƯỚC khi bật Trợ năng. Cần làm lại mỗi lần khởi động lại điện thoại hoặc cài lại app.\n" +
+                "3) Bấm \"Bật dịch vụ Trợ năng\", tìm \"Auto Trắc Nghiệm\" và bật.\n" +
                 "4) Mở app/web có câu trắc nghiệm, bấm nút nổi \"▶ AI\" để bật chế độ tự chọn; bấm lại để tắt. " +
                 "Nhấn giữ nút nổi để sao chép dữ liệu app đọc được.\n\n" +
                 "Chỉ dùng để ôn tập, luyện đề. Không dùng trong bài kiểm tra/thi thật."
@@ -43,14 +43,15 @@ class MainActivity : Activity() {
             }
         })
         root.addView(Button(this).apply {
-            text = "Bật dịch vụ Trợ năng"
-            setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-        })
-        root.addView(Button(this).apply {
             text = "Cấp quyền chụp màn hình"
             setOnClickListener {
-                val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                startActivityForResult(mpm.createScreenCaptureIntent(), 1001)
+                try {
+                    statusView.text = "Đang chờ bạn bấm \"Bắt đầu ngay\" trong hộp thoại của hệ thống…"
+                    val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                    startActivityForResult(mpm.createScreenCaptureIntent(), 1001)
+                } catch (e: Exception) {
+                    statusView.text = "Không mở được hộp thoại cấp quyền: " + e.javaClass.simpleName + " " + (e.message ?: "")
+                }
             }
         })
         root.addView(Button(this).apply {
@@ -59,6 +60,10 @@ class MainActivity : Activity() {
                 stopService(Intent(this@MainActivity, CaptureService::class.java))
                 statusView.postDelayed({ updateStatus() }, 500)
             }
+        })
+        root.addView(Button(this).apply {
+            text = "Bật dịch vụ Trợ năng"
+            setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         })
         statusView = TextView(this).apply { textSize = 16f }
         root.addView(statusView)
@@ -71,19 +76,31 @@ class MainActivity : Activity() {
     }
 
     private fun updateStatus() {
-        statusView.text = if (CaptureService.isRunning()) "Chụp màn hình: ĐANG BẬT" else "Chụp màn hình: CHƯA BẬT"
+        val base = if (CaptureService.isRunning()) "Chụp màn hình: ĐANG BẬT" else "Chụp màn hình: CHƯA BẬT"
+        val err = CaptureService.lastError
+        statusView.text = if (err.isNotEmpty()) base + "\nLỗi: " + err else base
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 1001 && resultCode == RESULT_OK && data != null) {
-            val i = Intent(this, CaptureService::class.java)
-                .putExtra("code", resultCode)
-                .putExtra("data", data)
-            startForegroundService(i)
-            statusView.postDelayed({ updateStatus() }, 1000)
-        } else if (requestCode == 1001) {
-            Toast.makeText(this, "Bạn chưa cho phép chụp màn hình", Toast.LENGTH_SHORT).show()
+        if (requestCode != 1001) return
+        if (resultCode == RESULT_OK && data != null) {
+            try {
+                val i = Intent(this, CaptureService::class.java)
+                    .putExtra("code", resultCode)
+                    .putExtra("data", data)
+                val comp = startForegroundService(i)
+                if (comp == null) {
+                    statusView.text = "LỖI: chưa khai báo CaptureService trong AndroidManifest.xml (cần thẻ <service android:name=\".CaptureService\" ... foregroundServiceType=\"mediaProjection\" />)"
+                    return
+                }
+                statusView.text = "Đang khởi động chụp màn hình…"
+                statusView.postDelayed({ updateStatus() }, 1500)
+            } catch (e: Exception) {
+                statusView.text = "LỖI khởi động: " + e.javaClass.simpleName + ": " + (e.message ?: "")
+            }
+        } else {
+            statusView.text = "Bạn chưa bấm \"Bắt đầu ngay\" (mã trả về: $resultCode). Nếu không thấy hộp thoại, hãy tắt dịch vụ Trợ năng rồi thử lại."
         }
     }
 }
